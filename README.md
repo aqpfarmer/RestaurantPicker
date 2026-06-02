@@ -25,14 +25,16 @@ Restaurant Picker is a WinUI 3 desktop app that demonstrates MVVM with a SQLite 
 
 ## Build and Run
 
-1. Install .NET SDK 10 and Windows App Runtime 2.1 (x64).
+1. Install .NET SDK 10.
 2. From the workspace root, build:
 	`C:/Program Files/dotnet/dotnet.exe build ./RestaurantPicker/RestaurantPicker.csproj`
-3. Run:
-	`C:/Program Files/dotnet/dotnet.exe run --project ./RestaurantPicker/RestaurantPicker.csproj`
+3. For a distributable unpackaged build that does not require machine-installed .NET or Windows App Runtime, publish:
+	`C:/Program Files/dotnet/dotnet.exe publish ./RestaurantPicker/RestaurantPicker.csproj -c Release -r win-x64`
+4. Run the published executable from the publish folder.
 
 ## Notes
 
 - The app targets `net10.0-windows10.0.19041.0`.
-- If the app fails at startup, ensure Windows App Runtime 2.1 x64 is installed.
+- The project is configured for self-contained unpackaged publish on `win-x64`.
+- The published output bundles the required .NET and Windows App SDK runtime files.
 - SQLite native initialization is performed during app startup.
