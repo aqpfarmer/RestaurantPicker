@@ -1,6 +1,7 @@
 using System.Collections.Specialized;
 using System.ComponentModel;
 using System.IO;
+using System.Reflection;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
@@ -16,11 +17,16 @@ namespace RestaurantPicker.Views;
 
 public sealed partial class MainPage : Page
 {
+    private const string AppAuthor = "Chris Murphy";
+    private const string AppVersion = "1.0.0";
+
     private readonly MainViewModel _viewModel;
 
     public MainPage()
     {
         InitializeComponent();
+        AppVersionTextBlock.Text = $"Version {AppVersion}";
+        AppAuthorTextBlock.Text = $"Author: {AppAuthor}";
 
         var appDataDir = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RestaurantPicker");
         Directory.CreateDirectory(appDataDir);
@@ -29,6 +35,7 @@ public sealed partial class MainPage : Page
         DataContext = _viewModel;
 
         _viewModel.PropertyChanged += ViewModelOnPropertyChanged;
+        _viewModel.SelectionAccepted += ViewModelOnSelectionAccepted;
         _viewModel.Restaurants.CollectionChanged += RestaurantsOnCollectionChanged;
         Loaded += MainPage_Loaded;
     }
@@ -183,9 +190,39 @@ public sealed partial class MainPage : Page
 
         var storyboard = new Storyboard();
         storyboard.Children.Add(animation);
+        storyboard.Completed += (_, _) => _viewModel.CompleteSpin();
         Storyboard.SetTarget(animation, WheelRotateTransform);
         Storyboard.SetTargetProperty(animation, "Angle");
         storyboard.Begin();
+    }
+
+    private static string GetApplicationVersion()
+    {
+        var informationalVersion = Assembly
+            .GetExecutingAssembly()
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
+            .InformationalVersion;
+
+        if (!string.IsNullOrWhiteSpace(informationalVersion))
+        {
+            return informationalVersion;
+        }
+
+        var version = Assembly.GetExecutingAssembly().GetName().Version;
+        return version?.ToString() ?? "Unknown";
+    }
+
+    private async void ViewModelOnSelectionAccepted(object? sender, string message)
+    {
+        var dialog = new ContentDialog
+        {
+            XamlRoot = XamlRoot,
+            Title = "Selection Accepted",
+            Content = message,
+            CloseButtonText = "OK"
+        };
+
+        await dialog.ShowAsync();
     }
 
     private static Windows.UI.Color ConvertHexColor(string hex)
@@ -232,17 +269,46 @@ public sealed partial class MainPage : Page
 
     private async void ResultWebsiteLink_Click(object sender, RoutedEventArgs e)
     {
+        await LaunchWebsiteFromSenderAsync(sender);
+    }
+
+    private async void RestaurantWebsiteLink_Click(object sender, RoutedEventArgs e)
+    {
+        await LaunchWebsiteFromSenderAsync(sender);
+    }
+
+    private async Task LaunchWebsiteFromSenderAsync(object sender)
+    {
         var url = _viewModel.SpinResult?.WebsiteUrl;
-        if (string.IsNullOrWhiteSpace(url))
+        if (sender is FrameworkElement { Tag: string itemUrl } && !string.IsNullOrWhiteSpace(itemUrl))
         {
-            return;
+            url = itemUrl;
         }
 
-        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        var uri = CreateWebsiteUri(url);
+        if (uri is null)
         {
             return;
         }
 
         await Launcher.LaunchUriAsync(uri);
+    }
+
+    private static Uri? CreateWebsiteUri(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            return null;
+        }
+
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        {
+            if (!Uri.TryCreate($"https://{url}", UriKind.Absolute, out uri))
+            {
+                return null;
+            }
+        }
+
+        return uri;
     }
 }

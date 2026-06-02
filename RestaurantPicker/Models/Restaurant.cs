@@ -7,4 +7,6 @@ public class Restaurant
     public string RestaurantType { get; set; } = string.Empty;
     public string? Address { get; set; }
     public string? WebsiteUrl { get; set; }
+
+    public bool HasWebsite => !string.IsNullOrWhiteSpace(WebsiteUrl);
 }

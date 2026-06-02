@@ -14,10 +14,14 @@ public partial class MainViewModel : ObservableObject
     private Restaurant _currentRestaurant;
     private Restaurant? _selectedRestaurant;
     private Restaurant? _spinResult;
+    private Restaurant? _pendingSpinResult;
     private string _statusMessage;
     private bool _needsMinimumRestaurants;
+    private bool _isSpinning;
     private double _spinTargetAngle;
     private int _selectedSliceIndex;
+
+    public event EventHandler<string>? SelectionAccepted;
 
     public Restaurant CurrentRestaurant
     {
@@ -50,6 +54,19 @@ public partial class MainViewModel : ObservableObject
         set => SetProperty(ref _statusMessage, value);
     }
 
+    public bool IsSpinning
+    {
+        get => _isSpinning;
+        set
+        {
+            if (SetProperty(ref _isSpinning, value))
+            {
+                SpinWheelCommand.NotifyCanExecuteChanged();
+                AcceptSelectionCommand.NotifyCanExecuteChanged();
+            }
+        }
+    }
+
     public bool NeedsMinimumRestaurants
     {
         get => _needsMinimumRestaurants;
@@ -71,6 +88,8 @@ public partial class MainViewModel : ObservableObject
     public ObservableCollection<Restaurant> Restaurants { get; } = new();
 
     public bool CanSpin => Restaurants.Count >= 3;
+    public bool CanSpinWheel => CanSpin && !IsSpinning;
+    public bool CanAcceptSelection => SpinResult is not null && !IsSpinning;
 
     public MainViewModel(IRestaurantRepository repository)
     {
@@ -155,7 +174,7 @@ public partial class MainViewModel : ObservableObject
         StatusMessage = "Form cleared.";
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanSpinWheel))]
     public void SpinWheel()
     {
         if (!CanSpin)
@@ -166,7 +185,9 @@ public partial class MainViewModel : ObservableObject
         }
 
         SelectedSliceIndex = _random.Next(Restaurants.Count);
-        SpinResult = Restaurants[SelectedSliceIndex];
+        _pendingSpinResult = Restaurants[SelectedSliceIndex];
+        SpinResult = null;
+        IsSpinning = true;
 
         var sliceAngle = 360.0 / Restaurants.Count;
         var selectedSliceCenter = (SelectedSliceIndex * sliceAngle) + (sliceAngle / 2.0);
@@ -175,18 +196,35 @@ public partial class MainViewModel : ObservableObject
 
         // Add full rotations for animation appeal and include previous target to keep momentum.
         SpinTargetAngle += (6 * 360.0) + desiredAngle;
-        StatusMessage = $"Wheel stopped on: {SpinResult.Name}";
+        StatusMessage = "Spinning wheel...";
     }
 
-    [RelayCommand]
-    public void SpinAgain()
+    public void CompleteSpin()
     {
-        SpinWheel();
+        if (!IsSpinning)
+        {
+            return;
+        }
+
+        IsSpinning = false;
+        SpinResult = _pendingSpinResult;
+        _pendingSpinResult = null;
+
+        if (SpinResult is not null)
+        {
+            StatusMessage = $"Wheel stopped on: {SpinResult.Name}";
+        }
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanAcceptSelection))]
     public void AcceptSelection()
     {
+        if (IsSpinning)
+        {
+            StatusMessage = "Wait for the wheel to stop before accepting.";
+            return;
+        }
+
         if (SpinResult is null)
         {
             StatusMessage = "Spin first to choose a restaurant.";
@@ -194,6 +232,7 @@ public partial class MainViewModel : ObservableObject
         }
 
         StatusMessage = $"Accepted: {SpinResult.Name} ({SpinResult.RestaurantType}).";
+        SelectionAccepted?.Invoke(this, $"You chose {SpinResult.Name} ({SpinResult.RestaurantType}).");
     }
 
     private async Task ReloadRestaurantsAsync()
@@ -213,5 +252,7 @@ public partial class MainViewModel : ObservableObject
         }
 
         OnPropertyChanged(nameof(CanSpin));
+        SpinWheelCommand.NotifyCanExecuteChanged();
+        AcceptSelectionCommand.NotifyCanExecuteChanged();
     }
 }
