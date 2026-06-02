@@ -1,7 +1,6 @@
 using System.Collections.Specialized;
 using System.ComponentModel;
 using System.IO;
-using System.Reflection;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
@@ -35,7 +34,6 @@ public sealed partial class MainPage : Page
         DataContext = _viewModel;
 
         _viewModel.PropertyChanged += ViewModelOnPropertyChanged;
-        _viewModel.SelectionAccepted += ViewModelOnSelectionAccepted;
         _viewModel.Restaurants.CollectionChanged += RestaurantsOnCollectionChanged;
         Loaded += MainPage_Loaded;
     }
@@ -107,6 +105,8 @@ public sealed partial class MainPage : Page
         const double centerX = 250;
         const double centerY = 250;
         const double radius = 230;
+        var currentRotationDegrees = NormalizeAngleDegrees(WheelRotateTransform.Angle);
+        var currentRotationRadians = currentRotationDegrees * Math.PI / 180.0;
         var sliceAngle = 360.0 / restaurants.Count;
 
         for (var i = 0; i < restaurants.Count; i++)
@@ -125,25 +125,182 @@ public sealed partial class MainPage : Page
             WheelCanvas.Children.Add(path);
 
             var midAngleRadians = ((startAngle + endAngle) / 2.0) * Math.PI / 180.0;
-            var labelRadius = radius * 0.62;
-            var labelX = centerX + Math.Cos(midAngleRadians) * labelRadius;
-            var labelY = centerY + Math.Sin(midAngleRadians) * labelRadius;
 
-            var textBlock = new TextBlock
+            if (restaurants.Count >= 10)
             {
-                Text = restaurants[i].Name,
+                DrawRadialLabel(
+                    restaurants[i].Name,
+                    centerX,
+                    centerY,
+                    radius,
+                    midAngleRadians,
+                    currentRotationRadians,
+                    currentRotationDegrees);
+            }
+            else
+            {
+                DrawHorizontalLabel(
+                    restaurants[i].Name,
+                    centerX,
+                    centerY,
+                    radius,
+                    midAngleRadians,
+                    currentRotationDegrees);
+            }
+        }
+    }
+
+    private void DrawHorizontalLabel(
+        string text,
+        double centerX,
+        double centerY,
+        double radius,
+        double midAngleRadians,
+        double currentRotationDegrees)
+    {
+        var labelRadius = radius * 0.62;
+        var labelX = centerX + Math.Cos(midAngleRadians) * labelRadius;
+        var labelY = centerY + Math.Sin(midAngleRadians) * labelRadius;
+
+        var textBlock = new TextBlock
+        {
+            Text = text,
+            Foreground = new SolidColorBrush(ConvertHexColor("#111111")),
+            FontSize = 14,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            Width = 120,
+            TextAlignment = TextAlignment.Center,
+            TextWrapping = TextWrapping.WrapWholeWords,
+            RenderTransformOrigin = new Windows.Foundation.Point(0.5, 0.5),
+            RenderTransform = new RotateTransform { Angle = -currentRotationDegrees }
+        };
+
+        Canvas.SetLeft(textBlock, labelX - 60);
+        Canvas.SetTop(textBlock, labelY - 15);
+        WheelCanvas.Children.Add(textBlock);
+    }
+
+    private void DrawRadialLabel(
+        string text,
+        double centerX,
+        double centerY,
+        double radius,
+        double midAngleRadians,
+        double currentRotationRadians,
+        double currentRotationDegrees)
+    {
+        var safeText = string.IsNullOrWhiteSpace(text) ? "?" : text.Trim();
+        var characters = safeText.ToCharArray();
+
+        const double outerPadding = 16;
+        const double minInnerRadiusFactor = 0.22;
+        const double charHeightFactor = 0.95;
+        const double maxOuterFontSize = 18;
+        const double minOuterFontSize = 8;
+        const double minInnerFontSize = 5;
+        const double innerFontScale = 0.62;
+
+        var outerRadius = radius - outerPadding;
+        var minInnerRadius = radius * minInnerRadiusFactor;
+        var availableSpan = outerRadius - minInnerRadius;
+        var characterCount = characters.Length;
+
+        var outerFontSize = maxOuterFontSize;
+        var innerFontSize = Math.Max(minInnerFontSize, outerFontSize * innerFontScale);
+
+        while (outerFontSize > minOuterFontSize &&
+               EstimateRadialLabelSpan(characterCount, outerFontSize, innerFontSize, charHeightFactor) > availableSpan)
+        {
+            outerFontSize -= 0.5;
+            innerFontSize = Math.Max(minInnerFontSize, outerFontSize * innerFontScale);
+        }
+
+        var displayedAngleRadians = midAngleRadians + currentRotationRadians;
+        var isLowerHalf = Math.Sin(displayedAngleRadians) > 0;
+        var radialRotation = (displayedAngleRadians * 180.0 / Math.PI) + 90.0;
+        if (isLowerHalf)
+        {
+            radialRotation += 180;
+        }
+
+        radialRotation -= currentRotationDegrees;
+
+        var characterHeights = new double[characterCount];
+        for (var index = 0; index < characterCount; index++)
+        {
+            var progressFromOuter = characterCount == 1
+                ? 0.0
+                : isLowerHalf
+                    ? (double)(characterCount - 1 - index) / (characterCount - 1)
+                    : (double)index / (characterCount - 1);
+
+            var fontSize = Lerp(outerFontSize, innerFontSize, progressFromOuter);
+            characterHeights[index] = fontSize * charHeightFactor;
+        }
+
+        var radiusCursor = isLowerHalf
+            ? minInnerRadius + (characterHeights[0] / 2.0)
+            : outerRadius - (characterHeights[0] / 2.0);
+
+        for (var index = 0; index < characterCount; index++)
+        {
+            var progressFromOuter = characterCount == 1
+                ? 0.0
+                : isLowerHalf
+                    ? (double)(characterCount - 1 - index) / (characterCount - 1)
+                    : (double)index / (characterCount - 1);
+
+            var fontSize = Lerp(outerFontSize, innerFontSize, progressFromOuter);
+            var charX = centerX + Math.Cos(midAngleRadians) * radiusCursor;
+            var charY = centerY + Math.Sin(midAngleRadians) * radiusCursor;
+
+            var characterBlock = new TextBlock
+            {
+                Text = characters[index].ToString(),
                 Foreground = new SolidColorBrush(ConvertHexColor("#111111")),
-                FontSize = 14,
+                FontSize = fontSize,
                 FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-                Width = 120,
-                TextAlignment = TextAlignment.Center,
-                TextWrapping = TextWrapping.WrapWholeWords
+                RenderTransformOrigin = new Windows.Foundation.Point(0.5, 0.5),
+                RenderTransform = new RotateTransform { Angle = radialRotation }
             };
 
-            Canvas.SetLeft(textBlock, labelX - 60);
-            Canvas.SetTop(textBlock, labelY - 15);
-            WheelCanvas.Children.Add(textBlock);
+            Canvas.SetLeft(characterBlock, charX - (fontSize * 0.35));
+            Canvas.SetTop(characterBlock, charY - (fontSize * 0.55));
+            WheelCanvas.Children.Add(characterBlock);
+
+            if (index < characterCount - 1)
+            {
+                var step = (characterHeights[index] / 2.0) + (characterHeights[index + 1] / 2.0);
+                radiusCursor += isLowerHalf ? step : -step;
+            }
         }
+    }
+
+    private static double EstimateRadialLabelSpan(int characterCount, double outerFontSize, double innerFontSize, double charHeightFactor)
+    {
+        if (characterCount <= 0)
+        {
+            return 0;
+        }
+
+        var span = 0.0;
+        for (var index = 0; index < characterCount; index++)
+        {
+            var t = characterCount == 1 ? 0.0 : (double)index / (characterCount - 1);
+            span += Lerp(outerFontSize, innerFontSize, t) * charHeightFactor;
+        }
+
+        return span;
+    }
+
+    private static double Lerp(double start, double end, double t)
+    {
+        return start + ((end - start) * t);
+    }
+
+    private static double NormalizeAngleDegrees(double angle)
+    {
+        return ((angle % 360.0) + 360.0) % 360.0;
     }
 
     private static Geometry CreateSliceGeometry(double centerX, double centerY, double radius, double startAngle, double endAngle)
@@ -190,39 +347,14 @@ public sealed partial class MainPage : Page
 
         var storyboard = new Storyboard();
         storyboard.Children.Add(animation);
-        storyboard.Completed += (_, _) => _viewModel.CompleteSpin();
+        storyboard.Completed += (_, _) =>
+        {
+            _viewModel.CompleteSpin();
+            DrawWheel();
+        };
         Storyboard.SetTarget(animation, WheelRotateTransform);
         Storyboard.SetTargetProperty(animation, "Angle");
         storyboard.Begin();
-    }
-
-    private static string GetApplicationVersion()
-    {
-        var informationalVersion = Assembly
-            .GetExecutingAssembly()
-            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
-            .InformationalVersion;
-
-        if (!string.IsNullOrWhiteSpace(informationalVersion))
-        {
-            return informationalVersion;
-        }
-
-        var version = Assembly.GetExecutingAssembly().GetName().Version;
-        return version?.ToString() ?? "Unknown";
-    }
-
-    private async void ViewModelOnSelectionAccepted(object? sender, string message)
-    {
-        var dialog = new ContentDialog
-        {
-            XamlRoot = XamlRoot,
-            Title = "Selection Accepted",
-            Content = message,
-            CloseButtonText = "OK"
-        };
-
-        await dialog.ShowAsync();
     }
 
     private static Windows.UI.Color ConvertHexColor(string hex)
@@ -275,6 +407,11 @@ public sealed partial class MainPage : Page
     private async void RestaurantWebsiteLink_Click(object sender, RoutedEventArgs e)
     {
         await LaunchWebsiteFromSenderAsync(sender);
+    }
+
+    private void QuitButton_Click(object sender, RoutedEventArgs e)
+    {
+        Application.Current.Exit();
     }
 
     private async Task LaunchWebsiteFromSenderAsync(object sender)

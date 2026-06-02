@@ -21,8 +21,6 @@ public partial class MainViewModel : ObservableObject
     private double _spinTargetAngle;
     private int _selectedSliceIndex;
 
-    public event EventHandler<string>? SelectionAccepted;
-
     public Restaurant CurrentRestaurant
     {
         get => _currentRestaurant;
@@ -62,7 +60,6 @@ public partial class MainViewModel : ObservableObject
             if (SetProperty(ref _isSpinning, value))
             {
                 SpinWheelCommand.NotifyCanExecuteChanged();
-                AcceptSelectionCommand.NotifyCanExecuteChanged();
             }
         }
     }
@@ -89,7 +86,6 @@ public partial class MainViewModel : ObservableObject
 
     public bool CanSpin => Restaurants.Count >= 3;
     public bool CanSpinWheel => CanSpin && !IsSpinning;
-    public bool CanAcceptSelection => SpinResult is not null && !IsSpinning;
 
     public MainViewModel(IRestaurantRepository repository)
     {
@@ -193,9 +189,11 @@ public partial class MainViewModel : ObservableObject
         var selectedSliceCenter = (SelectedSliceIndex * sliceAngle) + (sliceAngle / 2.0);
         var pointerAngle = 270.0;
         var desiredAngle = (pointerAngle - selectedSliceCenter + 360.0) % 360.0;
+        var currentWheelAngle = ((SpinTargetAngle % 360.0) + 360.0) % 360.0;
+        var deltaToDesired = (desiredAngle - currentWheelAngle + 360.0) % 360.0;
 
         // Add full rotations for animation appeal and include previous target to keep momentum.
-        SpinTargetAngle += (6 * 360.0) + desiredAngle;
+        SpinTargetAngle += (6 * 360.0) + deltaToDesired;
         StatusMessage = "Spinning wheel...";
     }
 
@@ -216,25 +214,6 @@ public partial class MainViewModel : ObservableObject
         }
     }
 
-    [RelayCommand(CanExecute = nameof(CanAcceptSelection))]
-    public void AcceptSelection()
-    {
-        if (IsSpinning)
-        {
-            StatusMessage = "Wait for the wheel to stop before accepting.";
-            return;
-        }
-
-        if (SpinResult is null)
-        {
-            StatusMessage = "Spin first to choose a restaurant.";
-            return;
-        }
-
-        StatusMessage = $"Accepted: {SpinResult.Name} ({SpinResult.RestaurantType}).";
-        SelectionAccepted?.Invoke(this, $"You chose {SpinResult.Name} ({SpinResult.RestaurantType}).");
-    }
-
     private async Task ReloadRestaurantsAsync()
     {
         var allRestaurants = await _repository.GetAllAsync();
@@ -253,6 +232,5 @@ public partial class MainViewModel : ObservableObject
 
         OnPropertyChanged(nameof(CanSpin));
         SpinWheelCommand.NotifyCanExecuteChanged();
-        AcceptSelectionCommand.NotifyCanExecuteChanged();
     }
 }

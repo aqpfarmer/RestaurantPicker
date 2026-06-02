@@ -64,7 +64,7 @@
 
             <StackPanel VerticalAlignment="Bottom" Margin="0,0,0,-90" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Center">
                 <Button Content="Spin" Command="{Binding SpinWheelCommand}" />
-                <Button Content="Accept" Command="{Binding AcceptSelectionCommand}" />
+                <Button Content="Quit" Click="QuitButton_Click" />
             </StackPanel>
         </Grid>
 
