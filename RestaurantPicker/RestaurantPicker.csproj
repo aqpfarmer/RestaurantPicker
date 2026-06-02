@@ -10,13 +10,7 @@
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <RuntimeIdentifiers>win-x86;win-x64;win-arm64</RuntimeIdentifiers>
     <UseWinUI>true</UseWinUI>
-    <WindowsPackageType>MSIX</WindowsPackageType>
-    <EnableMsixTooling>true</EnableMsixTooling>
-    <AppxManifest>Package.appxmanifest</AppxManifest>
-    <GenerateAppxPackageOnBuild>true</GenerateAppxPackageOnBuild>
-    <AppxPackageSigningEnabled>false</AppxPackageSigningEnabled>
-    <AppxBundle>Always</AppxBundle>
-    <AppxBundlePlatforms>x86|x64|arm64</AppxBundlePlatforms>
+    <WindowsPackageType>None</WindowsPackageType>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
