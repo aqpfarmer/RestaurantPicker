@@ -1,0 +1,55 @@
+# Build output
+**/bin/
+**/obj/
+**/out/
+**/Debug/
+**/Release/
+**/AppPackages/
+**/BundleArtifacts/
+
+# Publish output
+**/publish/
+**/Publish/
+
+# Test output
+**/TestResults/
+*.trx
+
+# Package and deployment artifacts
+*.nupkg
+*.snupkg
+*.appx
+*.appxbundle
+*.msix
+*.msixbundle
+*.msixupload
+*.appxupload
+
+# Runtime files and logs
+*.log
+*.cache
+*.db-shm
+*.db-wal
+*.dmp
+
+# User-specific files
+*.user
+*.rsuser
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Visual Studio / VS Code
+.vs/
+.vscode/*.log
+
+# Rider
+.idea/
+
+# NuGet
+.nuget/
+packages/
+
+# OS files
+.DS_Store
+Thumbs.db
