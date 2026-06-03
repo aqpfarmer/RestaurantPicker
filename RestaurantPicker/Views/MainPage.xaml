@@ -31,6 +31,13 @@
             <TextBox Header="Address" Text="{Binding CurrentRestaurant.Address, Mode=TwoWay}" />
             <TextBox Header="Website URL" Text="{Binding CurrentRestaurant.WebsiteUrl, Mode=TwoWay}" />
 
+            <TextBlock Text="Google Maps API Key" FontSize="16" Margin="0,8,0,0" />
+            <TextBox x:Name="GoogleMapsApiKeyTextBox" Header="API Key" PlaceholderText="AIza..." />
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <Button Content="Save Map Key" Click="SaveMapApiKeyButton_Click" />
+                <Button Content="Clear Map Key" Click="ClearMapApiKeyButton_Click" />
+            </StackPanel>
+
             <StackPanel Orientation="Horizontal" Spacing="8">
                 <Button Content="Save" Command="{Binding SaveRestaurantCommand}" />
                 <Button Content="Clear" Command="{Binding ClearFormCommand}" />
@@ -64,6 +71,7 @@
 
             <StackPanel VerticalAlignment="Bottom" Margin="0,0,0,-90" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Center">
                 <Button Content="Spin" Command="{Binding SpinWheelCommand}" />
+                <Button Content="Map" Click="MapButton_Click" />
                 <Button Content="Quit" Click="QuitButton_Click" />
             </StackPanel>
         </Grid>

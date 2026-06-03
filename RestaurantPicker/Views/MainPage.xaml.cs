@@ -1,14 +1,18 @@
 using System.Collections.Specialized;
 using System.ComponentModel;
 using System.IO;
+using System.Linq;
+using System.Text.Json;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Animation;
 using Microsoft.UI.Xaml.Shapes;
+using Microsoft.Web.WebView2.Core;
 using RestaurantPicker.Models;
 using RestaurantPicker.Services;
 using RestaurantPicker.ViewModels;
+using Windows.Storage;
 using Windows.System;
 using ShapePath = Microsoft.UI.Xaml.Shapes.Path;
 
@@ -18,8 +22,13 @@ public sealed partial class MainPage : Page
 {
     private const string AppAuthor = "Chris Murphy";
     private const string AppVersion = "1.0.0";
+    private const double NearbyRadiusMiles = 5.0;
+    private const int NearbyRadiusMeters = 8047;
+    private const string GoogleMapsApiKeyEnvironmentVariable = "GOOGLE_MAPS_API_KEY";
+    private const string GoogleMapsApiKeySettingName = "GoogleMapsApiKey";
 
     private readonly MainViewModel _viewModel;
+    private bool _isProcessingMapSelection;
 
     public MainPage()
     {
@@ -36,6 +45,8 @@ public sealed partial class MainPage : Page
         _viewModel.PropertyChanged += ViewModelOnPropertyChanged;
         _viewModel.Restaurants.CollectionChanged += RestaurantsOnCollectionChanged;
         Loaded += MainPage_Loaded;
+
+        GoogleMapsApiKeyTextBox.Text = GetSavedGoogleMapsApiKey();
     }
 
     private async void MainPage_Loaded(object sender, RoutedEventArgs e)
@@ -409,10 +420,536 @@ public sealed partial class MainPage : Page
         await LaunchWebsiteFromSenderAsync(sender);
     }
 
+    private async void MapButton_Click(object sender, RoutedEventArgs e)
+    {
+        await ShowMapPickerDialogAsync();
+    }
+
     private void QuitButton_Click(object sender, RoutedEventArgs e)
     {
         Application.Current.Exit();
     }
+
+        private async Task ShowMapPickerDialogAsync()
+        {
+            var apiKey = ResolveGoogleMapsApiKey();
+                if (string.IsNullOrWhiteSpace(apiKey))
+                {
+                        var missingKeyDialog = new ContentDialog
+                        {
+                                XamlRoot = XamlRoot,
+                                Title = "Google Maps API Key Required",
+                    Content = "Enter a key in the Google Maps API Key field and click Save Map Key, or set GOOGLE_MAPS_API_KEY.",
+                                CloseButtonText = "OK"
+                        };
+
+                        await missingKeyDialog.ShowAsync();
+                        return;
+                }
+
+                var mapWebView = new WebView2
+                {
+                        MinWidth = 900,
+                        MinHeight = 600
+                };
+
+                mapWebView.CoreWebView2Initialized += (_, initArgs) =>
+                {
+                    if (initArgs.Exception is not null || mapWebView.CoreWebView2 is null)
+                    {
+                        return;
+                    }
+
+                    mapWebView.CoreWebView2.WebMessageReceived += MapWebViewOnWebMessageReceived;
+                };
+                mapWebView.NavigateToString(CreateMapPickerHtml(apiKey));
+
+                var dialog = new ContentDialog
+                {
+                        XamlRoot = XamlRoot,
+                        Title = $"Nearby Restaurants ({NearbyRadiusMiles:0} miles)",
+                        PrimaryButtonText = "Close",
+                        DefaultButton = ContentDialogButton.Primary,
+                        Content = mapWebView,
+                        FullSizeDesired = true,
+                        MaxWidth = 1200,
+                        MaxHeight = 860
+                };
+
+                await dialog.ShowAsync();
+                if (mapWebView.CoreWebView2 is not null)
+                {
+                    mapWebView.CoreWebView2.WebMessageReceived -= MapWebViewOnWebMessageReceived;
+                }
+        }
+
+            private async void MapWebViewOnWebMessageReceived(CoreWebView2 sender, CoreWebView2WebMessageReceivedEventArgs args)
+        {
+                if (_isProcessingMapSelection)
+                {
+                    return;
+                }
+
+                MapSelectionPayload? selection;
+                try
+                {
+                        selection = JsonSerializer.Deserialize<MapSelectionPayload>(args.WebMessageAsJson);
+                }
+                catch (JsonException)
+                {
+                        return;
+                }
+
+                if (selection is null || string.IsNullOrWhiteSpace(selection.Name))
+                {
+                        return;
+                }
+
+                _isProcessingMapSelection = true;
+
+                try
+                {
+                    var restaurant = new Restaurant
+                    {
+                        Name = selection.Name.Trim(),
+                        RestaurantType = DetermineRestaurantType(selection.RestaurantType),
+                        Address = string.IsNullOrWhiteSpace(selection.Address) ? null : selection.Address.Trim(),
+                        WebsiteUrl = string.IsNullOrWhiteSpace(selection.WebsiteUrl) ? null : selection.WebsiteUrl.Trim()
+                    };
+
+                    var addDialog = new ContentDialog
+                    {
+                        XamlRoot = XamlRoot,
+                        Title = "Add restaurant from map?",
+                        Content = BuildMapSelectionDialogContent(restaurant),
+                        PrimaryButtonText = "Add Restaurant",
+                        CloseButtonText = "Keep Searching"
+                    };
+
+                    var addResult = await addDialog.ShowAsync();
+                    if (addResult != ContentDialogResult.Primary)
+                    {
+                        _viewModel.StatusMessage = "Map selection canceled. Continue searching.";
+                        return;
+                    }
+
+                    if (IsPotentialDuplicate(restaurant))
+                    {
+                        var duplicateDialog = new ContentDialog
+                        {
+                            XamlRoot = XamlRoot,
+                            Title = "Possible Duplicate",
+                            Content = "A restaurant with the same name (and matching address when available) already exists. Add anyway?",
+                            PrimaryButtonText = "Add Anyway",
+                            CloseButtonText = "Cancel"
+                        };
+
+                        var duplicateResult = await duplicateDialog.ShowAsync();
+                        if (duplicateResult != ContentDialogResult.Primary)
+                        {
+                            _viewModel.StatusMessage = "Duplicate not added. Continue searching.";
+                            return;
+                        }
+                    }
+
+                    _viewModel.CurrentRestaurant = restaurant;
+                    await _viewModel.SaveRestaurantAsync();
+                    _viewModel.StatusMessage = $"Added from map: {restaurant.Name}";
+                }
+                finally
+                {
+                    _isProcessingMapSelection = false;
+                }
+            }
+
+            private UIElement BuildMapSelectionDialogContent(Restaurant restaurant)
+            {
+                return new StackPanel
+                {
+                    Spacing = 6,
+                    Children =
+                    {
+                        new TextBlock
+                        {
+                            Text = restaurant.Name,
+                            FontSize = 18,
+                            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold
+                        },
+                        new TextBlock { Text = $"Type: {restaurant.RestaurantType}" },
+                        new TextBlock { Text = string.IsNullOrWhiteSpace(restaurant.Address) ? "Address: (none)" : $"Address: {restaurant.Address}" },
+                        new TextBlock { Text = string.IsNullOrWhiteSpace(restaurant.WebsiteUrl) ? "Website: (none)" : $"Website: {restaurant.WebsiteUrl}" }
+                    }
+                };
+            }
+
+            private bool IsPotentialDuplicate(Restaurant candidate)
+            {
+                var candidateName = NormalizeForComparison(candidate.Name);
+                var candidateAddress = NormalizeForComparison(candidate.Address);
+
+                return _viewModel.Restaurants.Any(existing =>
+                {
+                    var existingName = NormalizeForComparison(existing.Name);
+                    if (!string.Equals(existingName, candidateName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return false;
+                    }
+
+                    var existingAddress = NormalizeForComparison(existing.Address);
+                    if (string.IsNullOrWhiteSpace(existingAddress) || string.IsNullOrWhiteSpace(candidateAddress))
+                    {
+                        return true;
+                    }
+
+                    return string.Equals(existingAddress, candidateAddress, StringComparison.OrdinalIgnoreCase);
+                });
+            }
+
+            private static string NormalizeForComparison(string? value)
+            {
+                return string.IsNullOrWhiteSpace(value)
+                    ? string.Empty
+                    : value.Trim().ToUpperInvariant();
+            }
+
+            private void SaveMapApiKeyButton_Click(object sender, RoutedEventArgs e)
+            {
+                var key = GoogleMapsApiKeyTextBox.Text?.Trim();
+                if (string.IsNullOrWhiteSpace(key))
+                {
+                    _viewModel.StatusMessage = "Map API key is empty.";
+                    return;
+                }
+
+                var localSettings = ApplicationData.Current.LocalSettings;
+                localSettings.Values[GoogleMapsApiKeySettingName] = key;
+                _viewModel.StatusMessage = "Map API key saved locally.";
+            }
+
+            private void ClearMapApiKeyButton_Click(object sender, RoutedEventArgs e)
+            {
+                var localSettings = ApplicationData.Current.LocalSettings;
+                if (localSettings.Values.ContainsKey(GoogleMapsApiKeySettingName))
+                {
+                    localSettings.Values.Remove(GoogleMapsApiKeySettingName);
+                }
+
+                GoogleMapsApiKeyTextBox.Text = string.Empty;
+                _viewModel.StatusMessage = "Saved map API key cleared.";
+            }
+
+            private string GetSavedGoogleMapsApiKey()
+            {
+                var localSettings = ApplicationData.Current.LocalSettings;
+                if (localSettings.Values.TryGetValue(GoogleMapsApiKeySettingName, out var value) && value is string key)
+                {
+                    return key;
+                }
+
+                return string.Empty;
+            }
+
+            private string? ResolveGoogleMapsApiKey()
+            {
+                var savedKey = GetSavedGoogleMapsApiKey();
+                if (!string.IsNullOrWhiteSpace(savedKey))
+                {
+                    return savedKey;
+                }
+
+                return Environment.GetEnvironmentVariable(GoogleMapsApiKeyEnvironmentVariable);
+            }
+
+        private static string DetermineRestaurantType(string? value)
+        {
+                if (string.IsNullOrWhiteSpace(value))
+                {
+                        return "Restaurant";
+                }
+
+                var normalized = value
+                        .Replace('_', ' ')
+                        .Trim();
+
+                if (normalized.Length == 0)
+                {
+                        return "Restaurant";
+                }
+
+                return char.ToUpperInvariant(normalized[0]) + normalized[1..];
+        }
+
+        private static string CreateMapPickerHtml(string apiKey)
+        {
+                var escapedApiKey = JsonSerializer.Serialize(apiKey);
+
+                return $$"""
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Restaurant Map Picker</title>
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            font-family: Segoe UI, sans-serif;
+            background: #f2f4f7;
+        }
+        #layout {
+            display: grid;
+            grid-template-columns: 320px 1fr;
+            height: 100%;
+        }
+        #sidebar {
+            border-right: 1px solid #d9dce1;
+            overflow-y: auto;
+            background: #ffffff;
+            padding: 12px;
+            box-sizing: border-box;
+        }
+        #sidebar h3 {
+            margin: 0 0 6px 0;
+            font-size: 16px;
+        }
+        #sidebar p {
+            margin: 0 0 10px 0;
+            color: #586172;
+            font-size: 13px;
+        }
+        .item {
+            border: 1px solid #e1e4ea;
+            border-radius: 10px;
+            padding: 8px;
+            margin-bottom: 8px;
+            background: #fbfcfe;
+            cursor: pointer;
+        }
+        .item:hover {
+            border-color: #5d8cff;
+            background: #f4f8ff;
+        }
+        .title {
+            font-weight: 600;
+            font-size: 14px;
+            color: #1f2937;
+            margin-bottom: 4px;
+        }
+        .address {
+            font-size: 12px;
+            color: #4b5563;
+        }
+        #map {
+            height: 100%;
+            width: 100%;
+        }
+        #status {
+            font-size: 12px;
+            color: #4b5563;
+            margin-top: 4px;
+        }
+    </style>
+</head>
+<body>
+    <div id="layout">
+        <div id="sidebar">
+            <h3>Nearby Restaurants</h3>
+            <p>Showing places within 5 miles of your location.</p>
+            <div id="status">Locating you...</div>
+            <div id="results"></div>
+        </div>
+        <div id="map"></div>
+    </div>
+
+    <script>
+        const apiKey = {{escapedApiKey}};
+        let map;
+        let userPosition;
+        let infoWindow;
+        const markers = [];
+        let placesService;
+
+        function setStatus(message) {
+            const status = document.getElementById("status");
+            status.textContent = message;
+        }
+
+        function clearMarkers() {
+            while (markers.length > 0) {
+                const marker = markers.pop();
+                marker.setMap(null);
+            }
+        }
+
+        function addResultItem(place) {
+            const results = document.getElementById("results");
+            const item = document.createElement("div");
+            item.className = "item";
+
+            const title = document.createElement("div");
+            title.className = "title";
+            title.textContent = place.name || "Unnamed Restaurant";
+
+            const address = document.createElement("div");
+            address.className = "address";
+            address.textContent = place.vicinity || place.formatted_address || "Address unavailable";
+
+            item.appendChild(title);
+            item.appendChild(address);
+            item.addEventListener("click", () => selectPlace(place));
+
+            results.appendChild(item);
+        }
+
+        function populateResults(places) {
+            const results = document.getElementById("results");
+            results.innerHTML = "";
+
+            if (!places || places.length === 0) {
+                setStatus("No restaurants found in 5 miles.");
+                return;
+            }
+
+            setStatus(`Found ${places.length} restaurants. Click one to add.`);
+
+            places.forEach(place => {
+                addResultItem(place);
+
+                if (!place.geometry || !place.geometry.location) {
+                    return;
+                }
+
+                const marker = new google.maps.Marker({
+                    map,
+                    position: place.geometry.location,
+                    title: place.name
+                });
+
+                marker.addListener("click", () => selectPlace(place));
+                markers.push(marker);
+            });
+        }
+
+        function selectPlace(place) {
+            const request = {
+                placeId: place.place_id,
+                fields: ["name", "formatted_address", "website", "types"]
+            };
+
+            placesService.getDetails(request, (details, status) => {
+                const chosen = status === google.maps.places.PlacesServiceStatus.OK && details
+                    ? details
+                    : place;
+
+                const name = chosen.name || "Unnamed Restaurant";
+                const address = chosen.formatted_address || chosen.vicinity || "";
+                const websiteUrl = chosen.website || "";
+                const restaurantType = (chosen.types && chosen.types.length > 0) ? chosen.types[0] : "restaurant";
+
+                if (window.chrome && window.chrome.webview) {
+                    window.chrome.webview.postMessage({
+                        name,
+                        address,
+                        websiteUrl,
+                        restaurantType
+                    });
+                }
+            });
+        }
+
+        function searchNearbyRestaurants() {
+            const request = {
+                location: userPosition,
+                radius: {{NearbyRadiusMeters}},
+                type: "restaurant"
+            };
+
+            placesService.nearbySearch(request, (results, status) => {
+                clearMarkers();
+                if (status !== google.maps.places.PlacesServiceStatus.OK) {
+                    setStatus("Unable to load nearby restaurants.");
+                    return;
+                }
+
+                populateResults(results);
+            });
+        }
+
+        function initMapAtPosition(position) {
+            userPosition = {
+                lat: position.coords.latitude,
+                lng: position.coords.longitude
+            };
+
+            map = new google.maps.Map(document.getElementById("map"), {
+                center: userPosition,
+                zoom: 13,
+                mapTypeControl: false,
+                streetViewControl: false
+            });
+
+            new google.maps.Marker({
+                map,
+                position: userPosition,
+                title: "Your location",
+                icon: {
+                    path: google.maps.SymbolPath.CIRCLE,
+                    scale: 8,
+                    fillColor: "#2563eb",
+                    fillOpacity: 1,
+                    strokeColor: "#ffffff",
+                    strokeWeight: 2
+                }
+            });
+
+            new google.maps.Circle({
+                map,
+                center: userPosition,
+                radius: {{NearbyRadiusMeters}},
+                fillColor: "#3b82f633",
+                strokeColor: "#2563eb",
+                strokeWeight: 1
+            });
+
+            infoWindow = new google.maps.InfoWindow();
+            placesService = new google.maps.places.PlacesService(map);
+            setStatus("Searching nearby restaurants...");
+            searchNearbyRestaurants();
+        }
+
+        function fallbackToDefaultLocation() {
+            setStatus("Location unavailable. Showing a default map area.");
+            initMapAtPosition({ coords: { latitude: 47.6062, longitude: -122.3321 } });
+        }
+
+        function initMap() {
+            if (!navigator.geolocation) {
+                fallbackToDefaultLocation();
+                return;
+            }
+
+            navigator.geolocation.getCurrentPosition(
+                initMapAtPosition,
+                fallbackToDefaultLocation,
+                { enableHighAccuracy: true, timeout: 10000, maximumAge: 300000 }
+            );
+        }
+    </script>
+    <script async defer src="https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=places&callback=initMap"></script>
+</body>
+</html>
+""";
+        }
+
+        private sealed class MapSelectionPayload
+        {
+                public string? Name { get; init; }
+                public string? Address { get; init; }
+                public string? WebsiteUrl { get; init; }
+                public string? RestaurantType { get; init; }
+        }
 
     private async Task LaunchWebsiteFromSenderAsync(object sender)
     {
