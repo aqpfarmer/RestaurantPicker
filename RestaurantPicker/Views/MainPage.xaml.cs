@@ -1,9 +1,12 @@
 using System.Collections.Specialized;
 using System.ComponentModel;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
 using System.Text.Json;
+using System.Runtime.InteropServices;
+using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
@@ -13,7 +16,10 @@ using Microsoft.Web.WebView2.Core;
 using RestaurantPicker.Models;
 using RestaurantPicker.Services;
 using RestaurantPicker.ViewModels;
+using Windows.Devices.Geolocation;
+using Windows.Graphics;
 using Windows.System;
+using WinRT.Interop;
 using ShapePath = Microsoft.UI.Xaml.Shapes.Path;
 
 namespace RestaurantPicker.Views;
@@ -21,15 +27,21 @@ namespace RestaurantPicker.Views;
 public sealed partial class MainPage : Page
 {
     private const string AppAuthor = "Chris Murphy";
-    private const string AppVersion = "1.0.0";
-    private const double NearbyRadiusMiles = 5.0;
-    private const int NearbyRadiusMeters = 8047;
+    private const string AppVersion = "1.1.0";
+    private const double NearbyRadiusMiles = 1.0;
+    private const int NearbyRadiusMeters = 1609;
     private const string GoogleMapsApiKeyEnvironmentVariable = "GOOGLE_MAPS_API_KEY";
     private const string GoogleMapsApiKeySettingName = "GoogleMapsApiKey";
 
     private readonly MainViewModel _viewModel;
     private readonly string _settingsFilePath;
     private bool _isProcessingMapSelection;
+    private static readonly JsonSerializerOptions WebMessageJsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true
+    };
+    private Window? _mapWindow;
+    private WebView2? _mapWebView;
 
     public MainPage()
     {
@@ -57,6 +69,7 @@ public sealed partial class MainPage : Page
         {
             await _viewModel.InitializeAsync();
             DrawWheel();
+            UpdateRuntimeStatus();
 
             if (_viewModel.NeedsMinimumRestaurants)
             {
@@ -412,6 +425,69 @@ public sealed partial class MainPage : Page
         await dialog.ShowAsync();
     }
 
+    private void UpdateRuntimeStatus()
+    {
+        var frameworkDescription = RuntimeInformation.FrameworkDescription;
+        var webView2Version = GetWebView2RuntimeVersion();
+
+        if (string.IsNullOrWhiteSpace(webView2Version))
+        {
+            _viewModel.StatusMessage = $"Running on {frameworkDescription}. WebView2 Runtime is not installed.";
+            return;
+        }
+
+        _viewModel.StatusMessage = $"Running on {frameworkDescription}. WebView2 Runtime {webView2Version}.";
+    }
+
+    private async Task<bool> EnsureRuntimeRequirementsAsync()
+    {
+        var frameworkDescription = RuntimeInformation.FrameworkDescription;
+        if (string.IsNullOrWhiteSpace(frameworkDescription))
+        {
+            await ShowRuntimeMissingDialogAsync(
+                "A compatible .NET runtime could not be detected.",
+                "This app is expected to run on a .NET 10 runtime. Reinstall the app or the required runtime and try again.");
+            return false;
+        }
+
+        var webView2Version = GetWebView2RuntimeVersion();
+        if (string.IsNullOrWhiteSpace(webView2Version))
+        {
+            await ShowRuntimeMissingDialogAsync(
+                ".NET runtime is present, but the WebView2 Runtime is missing.",
+                "Install Microsoft Edge WebView2 Runtime, then open the map again.");
+            return false;
+        }
+
+        _viewModel.StatusMessage = $"Running on {frameworkDescription}. WebView2 Runtime {webView2Version}.";
+        return true;
+    }
+
+    private string? GetWebView2RuntimeVersion()
+    {
+        try
+        {
+            return CoreWebView2Environment.GetAvailableBrowserVersionString();
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private async Task ShowRuntimeMissingDialogAsync(string title, string content)
+    {
+        var dialog = new ContentDialog
+        {
+            XamlRoot = XamlRoot,
+            Title = title,
+            Content = content,
+            CloseButtonText = "OK"
+        };
+
+        await dialog.ShowAsync();
+    }
+
     private async void ResultWebsiteLink_Click(object sender, RoutedEventArgs e)
     {
         await LaunchWebsiteFromSenderAsync(sender);
@@ -424,6 +500,11 @@ public sealed partial class MainPage : Page
 
     private async void MapButton_Click(object sender, RoutedEventArgs e)
     {
+        if (!await EnsureRuntimeRequirementsAsync())
+        {
+            return;
+        }
+
         await ShowMapPickerDialogAsync();
     }
 
@@ -434,56 +515,167 @@ public sealed partial class MainPage : Page
 
         private async Task ShowMapPickerDialogAsync()
         {
-            var apiKey = ResolveGoogleMapsApiKey();
-                if (string.IsNullOrWhiteSpace(apiKey))
-                {
-                        var missingKeyDialog = new ContentDialog
-                        {
-                                XamlRoot = XamlRoot,
-                                Title = "Google Maps API Key Required",
-                    Content = "Enter a key in the Google Maps API Key field and click Save Map Key, or set GOOGLE_MAPS_API_KEY.",
-                                CloseButtonText = "OK"
-                        };
+            if (_mapWindow is not null)
+            {
+                _mapWindow.Activate();
+                return;
+            }
 
-                        await missingKeyDialog.ShowAsync();
-                        return;
-                }
+            var apiKey = ResolveGoogleMapsApiKey();
+            if (string.IsNullOrWhiteSpace(apiKey))
+            {
+                var missingKeyDialog = new ContentDialog
+                {
+                    XamlRoot = XamlRoot,
+                    Title = "Google Maps API Key Required",
+                    Content = "Enter a key in the Google Maps API Key field and click Save Map Key, or set GOOGLE_MAPS_API_KEY.",
+                    CloseButtonText = "OK"
+                };
+
+                await missingKeyDialog.ShowAsync();
+                return;
+            }
+
+            try
+            {
+                const int mapWindowWidth = 1000;
+                const int mapWindowHeight = 800;
 
                 var mapWebView = new WebView2
                 {
-                        MinWidth = 900,
-                        MinHeight = 600
+                    HorizontalAlignment = HorizontalAlignment.Stretch,
+                    VerticalAlignment = VerticalAlignment.Stretch
                 };
 
-                mapWebView.CoreWebView2Initialized += (_, initArgs) =>
+                var mapHost = new Grid
                 {
-                    if (initArgs.Exception is not null || mapWebView.CoreWebView2 is null)
+                    Width = mapWindowWidth,
+                    Height = mapWindowHeight,
+                    HorizontalAlignment = HorizontalAlignment.Stretch,
+                    VerticalAlignment = VerticalAlignment.Stretch
+                };
+                mapHost.Children.Add(mapWebView);
+
+                mapWebView.NavigationCompleted += MapWebViewOnNavigationCompleted;
+                await mapWebView.EnsureCoreWebView2Async();
+
+                if (mapWebView.CoreWebView2 is null)
+                {
+                    await ShowRuntimeMissingDialogAsync(
+                        "WebView2 Initialization Failed",
+                        "WebView2 could not be initialized. Confirm the WebView2 Runtime is installed and try again.");
+                    return;
+                }
+
+                mapWebView.CoreWebView2.WebMessageReceived += MapWebViewOnWebMessageReceived;
+                mapWebView.CoreWebView2.PermissionRequested += MapWebViewOnPermissionRequested;
+
+                var initialCoordinates = await TryGetCurrentCoordinatesAsync();
+                mapWebView.NavigateToString(CreateMapPickerHtml(apiKey, initialCoordinates));
+
+                var mapWindow = new Window
+                {
+                    Title = $"Nearby Restaurants ({NearbyRadiusMiles:0} miles)",
+                    Content = mapHost
+                };
+
+                _mapWindow = mapWindow;
+                _mapWebView = mapWebView;
+
+                mapWindow.Closed += (_, _) =>
+                {
+                    if (_mapWebView is not null)
                     {
-                        return;
+                        _mapWebView.NavigationCompleted -= MapWebViewOnNavigationCompleted;
+
+                        if (_mapWebView.CoreWebView2 is not null)
+                        {
+                            _mapWebView.CoreWebView2.WebMessageReceived -= MapWebViewOnWebMessageReceived;
+                            _mapWebView.CoreWebView2.PermissionRequested -= MapWebViewOnPermissionRequested;
+                        }
                     }
 
-                    mapWebView.CoreWebView2.WebMessageReceived += MapWebViewOnWebMessageReceived;
-                };
-                mapWebView.NavigateToString(CreateMapPickerHtml(apiKey));
-
-                var dialog = new ContentDialog
-                {
-                        XamlRoot = XamlRoot,
-                        Title = $"Nearby Restaurants ({NearbyRadiusMiles:0} miles)",
-                        PrimaryButtonText = "Close",
-                        DefaultButton = ContentDialogButton.Primary,
-                        Content = mapWebView,
-                        FullSizeDesired = true,
-                        MaxWidth = 1200,
-                        MaxHeight = 860
+                    _mapWebView = null;
+                    _mapWindow = null;
                 };
 
-                await dialog.ShowAsync();
-                if (mapWebView.CoreWebView2 is not null)
-                {
-                    mapWebView.CoreWebView2.WebMessageReceived -= MapWebViewOnWebMessageReceived;
-                }
+                ConfigureMapWindow(mapWindow, mapWindowWidth, mapWindowHeight);
+                mapWindow.Activate();
+            }
+            catch (Exception ex)
+            {
+                await ShowRuntimeMissingDialogAsync(
+                    "Map Failed to Open",
+                    $"Could not open the map picker. {ex.Message}");
+
+                _mapWebView = null;
+                _mapWindow = null;
+            }
         }
+
+    private static void ConfigureMapWindow(Window mapWindow, int width, int height)
+    {
+        var hwnd = WindowNative.GetWindowHandle(mapWindow);
+        var windowId = Microsoft.UI.Win32Interop.GetWindowIdFromWindow(hwnd);
+        var appWindow = AppWindow.GetFromWindowId(windowId);
+
+        appWindow.Resize(new SizeInt32(width, height));
+
+        var displayArea = DisplayArea.GetFromWindowId(windowId, DisplayAreaFallback.Primary);
+        var workArea = displayArea.WorkArea;
+        var centeredX = workArea.X + Math.Max(0, (workArea.Width - width) / 2);
+        var centeredY = workArea.Y + Math.Max(0, (workArea.Height - height) / 2);
+        appWindow.Move(new PointInt32(centeredX, centeredY));
+
+        if (appWindow.Presenter is OverlappedPresenter presenter)
+        {
+            presenter.IsResizable = true;
+        }
+    }
+
+    private async void MapWebViewOnNavigationCompleted(WebView2 sender, CoreWebView2NavigationCompletedEventArgs args)
+    {
+        if (args.IsSuccess)
+        {
+            return;
+        }
+
+        var message = $"Map page failed to load. Error code: {args.WebErrorStatus}.";
+        _viewModel.StatusMessage = message;
+        await ShowRuntimeMissingDialogAsync("Map Load Error", message);
+    }
+
+    private void MapWebViewOnPermissionRequested(object? sender, CoreWebView2PermissionRequestedEventArgs args)
+    {
+        if (args.PermissionKind == CoreWebView2PermissionKind.Geolocation)
+        {
+            args.State = CoreWebView2PermissionState.Allow;
+            args.Handled = true;
+        }
+    }
+
+    private async Task<BasicGeoposition?> TryGetCurrentCoordinatesAsync()
+    {
+        try
+        {
+            var accessStatus = await Geolocator.RequestAccessAsync();
+            if (accessStatus != GeolocationAccessStatus.Allowed)
+            {
+                return null;
+            }
+
+            var geolocator = new Geolocator { DesiredAccuracyInMeters = 100 };
+            var position = await geolocator.GetGeopositionAsync(
+                maximumAge: TimeSpan.FromMinutes(5),
+                timeout: TimeSpan.FromSeconds(10));
+
+            return position.Coordinate.Point.Position;
+        }
+        catch
+        {
+            return null;
+        }
+    }
 
             private async void MapWebViewOnWebMessageReceived(CoreWebView2 sender, CoreWebView2WebMessageReceivedEventArgs args)
         {
@@ -492,10 +684,38 @@ public sealed partial class MainPage : Page
                     return;
                 }
 
+                try
+                {
+                    using var document = JsonDocument.Parse(args.WebMessageAsJson);
+                    var root = document.RootElement;
+                    if (root.TryGetProperty("kind", out var kindElement))
+                    {
+                        var kind = kindElement.GetString();
+                        if (string.Equals(kind, "error", StringComparison.OrdinalIgnoreCase))
+                        {
+                            var errorMessage = root.TryGetProperty("message", out var messageElement)
+                                ? messageElement.GetString()
+                                : "Unknown map script error.";
+
+                            if (!string.IsNullOrWhiteSpace(errorMessage))
+                            {
+                                _viewModel.StatusMessage = $"Map error: {errorMessage}";
+                                await ShowRuntimeMissingDialogAsync("Map Script Error", errorMessage);
+                            }
+
+                            return;
+                        }
+                    }
+                }
+                catch (JsonException)
+                {
+                    // Fall through and try deserializing as a place selection payload.
+                }
+
                 MapSelectionPayload? selection;
                 try
                 {
-                        selection = JsonSerializer.Deserialize<MapSelectionPayload>(args.WebMessageAsJson);
+                    selection = JsonSerializer.Deserialize<MapSelectionPayload>(args.WebMessageAsJson, WebMessageJsonOptions);
                 }
                 catch (JsonException)
                 {
@@ -522,10 +742,10 @@ public sealed partial class MainPage : Page
                     var addDialog = new ContentDialog
                     {
                         XamlRoot = XamlRoot,
-                        Title = "Add restaurant from map?",
+                        Title = "Add this restaurant?",
                         Content = BuildMapSelectionDialogContent(restaurant),
-                        PrimaryButtonText = "Add Restaurant",
-                        CloseButtonText = "Keep Searching"
+                        PrimaryButtonText = "Yes, Add",
+                        CloseButtonText = "No, Keep Looking"
                     };
 
                     var addResult = await addDialog.ShowAsync();
@@ -642,6 +862,12 @@ public sealed partial class MainPage : Page
 
             private string? ResolveGoogleMapsApiKey()
             {
+                var typedKey = GoogleMapsApiKeyTextBox.Text?.Trim();
+                if (!string.IsNullOrWhiteSpace(typedKey))
+                {
+                    return typedKey;
+                }
+
                 var savedKey = GetSavedGoogleMapsApiKey();
                 if (!string.IsNullOrWhiteSpace(savedKey))
                 {
@@ -731,9 +957,12 @@ public sealed partial class MainPage : Page
                 return char.ToUpperInvariant(normalized[0]) + normalized[1..];
         }
 
-        private static string CreateMapPickerHtml(string apiKey)
+        private static string CreateMapPickerHtml(string apiKey, BasicGeoposition? initialCoordinates)
         {
                 var escapedApiKey = JsonSerializer.Serialize(apiKey);
+            var radiusMilesLabel = NearbyRadiusMiles.ToString("0.#", CultureInfo.InvariantCulture);
+            var initialLatitude = initialCoordinates?.Latitude.ToString(CultureInfo.InvariantCulture) ?? "null";
+            var initialLongitude = initialCoordinates?.Longitude.ToString(CultureInfo.InvariantCulture) ?? "null";
 
                 return $$"""
 <!DOCTYPE html>
@@ -808,7 +1037,7 @@ public sealed partial class MainPage : Page
     <div id="layout">
         <div id="sidebar">
             <h3>Nearby Restaurants</h3>
-            <p>Showing places within 5 miles of your location.</p>
+            <p>Showing places within {{radiusMilesLabel}} mile(s) of your location.</p>
             <div id="status">Locating you...</div>
             <div id="results"></div>
         </div>
@@ -817,11 +1046,14 @@ public sealed partial class MainPage : Page
 
     <script>
         const apiKey = {{escapedApiKey}};
+        const initialPosition = { lat: {{initialLatitude}}, lng: {{initialLongitude}} };
+        const hasInitialPosition = initialPosition.lat !== null && initialPosition.lng !== null;
         let map;
         let userPosition;
         let infoWindow;
         const markers = [];
         let placesService;
+        let searchDebounceHandle = null;
 
         function setStatus(message) {
             const status = document.getElementById("status");
@@ -860,7 +1092,7 @@ public sealed partial class MainPage : Page
             results.innerHTML = "";
 
             if (!places || places.length === 0) {
-                setStatus("No restaurants found in 5 miles.");
+                setStatus("No restaurants found in {{radiusMilesLabel}} mile(s).");
                 return;
             }
 
@@ -911,21 +1143,46 @@ public sealed partial class MainPage : Page
             });
         }
 
+        function queueNearbySearch() {
+            if (searchDebounceHandle) {
+                clearTimeout(searchDebounceHandle);
+            }
+
+            searchDebounceHandle = setTimeout(() => {
+                searchNearbyRestaurants();
+            }, 250);
+        }
+
         function searchNearbyRestaurants() {
+            const center = map && map.getCenter ? map.getCenter() : null;
+            const searchLocation = center
+                ? { lat: center.lat(), lng: center.lng() }
+                : userPosition;
+
             const request = {
-                location: userPosition,
+                location: searchLocation,
                 radius: {{NearbyRadiusMeters}},
                 type: "restaurant"
             };
 
             placesService.nearbySearch(request, (results, status) => {
                 clearMarkers();
-                if (status !== google.maps.places.PlacesServiceStatus.OK) {
-                    setStatus("Unable to load nearby restaurants.");
+
+                if (status === google.maps.places.PlacesServiceStatus.OK) {
+                    populateResults(results);
                     return;
                 }
 
-                populateResults(results);
+                if (status === google.maps.places.PlacesServiceStatus.ZERO_RESULTS) {
+                    populateResults([]);
+                    return;
+                }
+
+                const message = `Unable to load nearby restaurants (${status}).`;
+                setStatus(message);
+
+                const resultsPanel = document.getElementById("results");
+                resultsPanel.innerHTML = "";
             });
         }
 
@@ -967,8 +1224,11 @@ public sealed partial class MainPage : Page
 
             infoWindow = new google.maps.InfoWindow();
             placesService = new google.maps.places.PlacesService(map);
-            setStatus("Searching nearby restaurants...");
-            searchNearbyRestaurants();
+            setStatus("Searching nearby restaurants near map center...");
+
+            // Refresh nearby results whenever the map view settles after pan/zoom.
+            map.addListener("idle", queueNearbySearch);
+            queueNearbySearch();
         }
 
         function fallbackToDefaultLocation() {
@@ -977,6 +1237,12 @@ public sealed partial class MainPage : Page
         }
 
         function initMap() {
+            if (hasInitialPosition) {
+                setStatus("Using your current location...");
+                initMapAtPosition({ coords: { latitude: initialPosition.lat, longitude: initialPosition.lng } });
+                return;
+            }
+
             if (!navigator.geolocation) {
                 fallbackToDefaultLocation();
                 return;
@@ -988,8 +1254,34 @@ public sealed partial class MainPage : Page
                 { enableHighAccuracy: true, timeout: 10000, maximumAge: 300000 }
             );
         }
+
+        window.gm_authFailure = function() {
+            setStatus("Google Maps authentication failed. Check API key restrictions and enabled APIs.");
+            if (window.chrome && window.chrome.webview) {
+                window.chrome.webview.postMessage({
+                    kind: "error",
+                    message: "Google Maps authentication failed. Check API key restrictions and enabled APIs (Maps JavaScript API and Places API)."
+                });
+            }
+        };
+
+        window.onerror = function(message) {
+            const safeMessage = message || "Unknown JavaScript error while loading map.";
+            setStatus(safeMessage);
+            if (window.chrome && window.chrome.webview) {
+                window.chrome.webview.postMessage({ kind: "error", message: safeMessage });
+            }
+        };
+
+        window.addEventListener("unhandledrejection", event => {
+            const reason = event && event.reason ? String(event.reason) : "Unhandled map promise rejection.";
+            setStatus(reason);
+            if (window.chrome && window.chrome.webview) {
+                window.chrome.webview.postMessage({ kind: "error", message: reason });
+            }
+        });
     </script>
-    <script async defer src="https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=places&callback=initMap"></script>
+    <script async defer src="https://maps.googleapis.com/maps/api/js?key={{apiKey}}&libraries=places&callback=initMap"></script>
 </body>
 </html>
 """;
