@@ -2,6 +2,7 @@ using System.Collections.Specialized;
 using System.ComponentModel;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Text.Json;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -12,7 +13,6 @@ using Microsoft.Web.WebView2.Core;
 using RestaurantPicker.Models;
 using RestaurantPicker.Services;
 using RestaurantPicker.ViewModels;
-using Windows.Storage;
 using Windows.System;
 using ShapePath = Microsoft.UI.Xaml.Shapes.Path;
 
@@ -28,6 +28,7 @@ public sealed partial class MainPage : Page
     private const string GoogleMapsApiKeySettingName = "GoogleMapsApiKey";
 
     private readonly MainViewModel _viewModel;
+    private readonly string _settingsFilePath;
     private bool _isProcessingMapSelection;
 
     public MainPage()
@@ -39,6 +40,7 @@ public sealed partial class MainPage : Page
         var appDataDir = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RestaurantPicker");
         Directory.CreateDirectory(appDataDir);
         var dbPath = System.IO.Path.Combine(appDataDir, "restaurantpicker.db");
+        _settingsFilePath = System.IO.Path.Combine(appDataDir, "settings.json");
         _viewModel = new MainViewModel(new SqliteRestaurantRepository(dbPath));
         DataContext = _viewModel;
 
@@ -621,18 +623,13 @@ public sealed partial class MainPage : Page
                     return;
                 }
 
-                var localSettings = ApplicationData.Current.LocalSettings;
-                localSettings.Values[GoogleMapsApiKeySettingName] = key;
+                SaveSetting(GoogleMapsApiKeySettingName, key);
                 _viewModel.StatusMessage = "Map API key saved locally.";
             }
 
             private void ClearMapApiKeyButton_Click(object sender, RoutedEventArgs e)
             {
-                var localSettings = ApplicationData.Current.LocalSettings;
-                if (localSettings.Values.ContainsKey(GoogleMapsApiKeySettingName))
-                {
-                    localSettings.Values.Remove(GoogleMapsApiKeySettingName);
-                }
+                RemoveSetting(GoogleMapsApiKeySettingName);
 
                 GoogleMapsApiKeyTextBox.Text = string.Empty;
                 _viewModel.StatusMessage = "Saved map API key cleared.";
@@ -640,13 +637,7 @@ public sealed partial class MainPage : Page
 
             private string GetSavedGoogleMapsApiKey()
             {
-                var localSettings = ApplicationData.Current.LocalSettings;
-                if (localSettings.Values.TryGetValue(GoogleMapsApiKeySettingName, out var value) && value is string key)
-                {
-                    return key;
-                }
-
-                return string.Empty;
+                return ReadSetting(GoogleMapsApiKeySettingName);
             }
 
             private string? ResolveGoogleMapsApiKey()
@@ -658,6 +649,67 @@ public sealed partial class MainPage : Page
                 }
 
                 return Environment.GetEnvironmentVariable(GoogleMapsApiKeyEnvironmentVariable);
+            }
+
+            private string ReadSetting(string key)
+            {
+                try
+                {
+                    var settings = ReadSettings();
+                    return settings.TryGetValue(key, out var value) ? value : string.Empty;
+                }
+                catch
+                {
+                    return string.Empty;
+                }
+            }
+
+            private void SaveSetting(string key, string value)
+            {
+                try
+                {
+                    var settings = ReadSettings();
+                    settings[key] = value;
+                    WriteSettings(settings);
+                }
+                catch
+                {
+                    _viewModel.StatusMessage = "Unable to save map API key.";
+                }
+            }
+
+            private void RemoveSetting(string key)
+            {
+                try
+                {
+                    var settings = ReadSettings();
+                    if (settings.Remove(key))
+                    {
+                        WriteSettings(settings);
+                    }
+                }
+                catch
+                {
+                    _viewModel.StatusMessage = "Unable to clear saved map API key.";
+                }
+            }
+
+            private Dictionary<string, string> ReadSettings()
+            {
+                if (!File.Exists(_settingsFilePath))
+                {
+                    return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                }
+
+                var json = File.ReadAllText(_settingsFilePath, Encoding.UTF8);
+                var parsed = JsonSerializer.Deserialize<Dictionary<string, string>>(json);
+                return parsed ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            }
+
+            private void WriteSettings(Dictionary<string, string> settings)
+            {
+                var json = JsonSerializer.Serialize(settings, new JsonSerializerOptions { WriteIndented = true });
+                File.WriteAllText(_settingsFilePath, json, Encoding.UTF8);
             }
 
         private static string DetermineRestaurantType(string? value)
