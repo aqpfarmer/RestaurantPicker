@@ -27,7 +27,7 @@ namespace RestaurantPicker.Views;
 public sealed partial class MainPage : Page
 {
     private const string AppAuthor = "Chris Murphy";
-    private const string AppVersion = "1.1.0";
+    private const string AppVersion = "1.1.2";
     private const double NearbyRadiusMiles = 1.0;
     private const int NearbyRadiusMeters = 1609;
     private const string GoogleMapsApiKeyEnvironmentVariable = "GOOGLE_MAPS_API_KEY";
@@ -1012,6 +1012,48 @@ public sealed partial class MainPage : Page
             border-color: #5d8cff;
             background: #f4f8ff;
         }
+        .controls {
+            display: grid;
+            gap: 8px;
+            margin: 0 0 10px 0;
+        }
+        .control-row {
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 8px;
+        }
+        .label {
+            font-size: 12px;
+            color: #374151;
+            margin-bottom: 2px;
+            font-weight: 600;
+        }
+        .input,
+        .select,
+        .button {
+            font: inherit;
+            border-radius: 8px;
+            border: 1px solid #cfd5df;
+            padding: 8px;
+            box-sizing: border-box;
+        }
+        .input:focus,
+        .select:focus {
+            outline: 2px solid #93c5fd;
+            outline-offset: 0;
+            border-color: #60a5fa;
+        }
+        .button {
+            background: #2563eb;
+            border-color: #1d4ed8;
+            color: #ffffff;
+            font-weight: 600;
+            cursor: pointer;
+            padding: 8px 12px;
+        }
+        .button:hover {
+            background: #1d4ed8;
+        }
         .title {
             font-weight: 600;
             font-size: 14px;
@@ -1038,6 +1080,30 @@ public sealed partial class MainPage : Page
         <div id="sidebar">
             <h3>Nearby Restaurants</h3>
             <p>Showing places within {{radiusMilesLabel}} mile(s) of your location.</p>
+            <div class="controls">
+                <div>
+                    <div class="label">Restaurant Name</div>
+                    <div class="control-row">
+                        <input id="nameSearchInput" class="input" type="text" placeholder="e.g. Thai Garden" />
+                        <button id="searchButton" class="button" type="button">Search</button>
+                    </div>
+                </div>
+                <div>
+                    <div class="label">Restaurant Type</div>
+                    <select id="typeFilter" class="select">
+                        <option value="restaurant">All Restaurants</option>
+                        <option value="cafe">Cafe</option>
+                        <option value="bar">Bar</option>
+                        <option value="bakery">Bakery</option>
+                        <option value="meal_takeaway">Takeout</option>
+                        <option value="meal_delivery">Delivery</option>
+                        <option value="pizza_restaurant">Pizza</option>
+                        <option value="sushi_restaurant">Sushi</option>
+                        <option value="mexican_restaurant">Mexican</option>
+                        <option value="chinese_restaurant">Chinese</option>
+                    </select>
+                </div>
+            </div>
             <div id="status">Locating you...</div>
             <div id="results"></div>
         </div>
@@ -1153,17 +1219,41 @@ public sealed partial class MainPage : Page
             }, 250);
         }
 
+        function getSearchFilters() {
+            const nameInput = document.getElementById("nameSearchInput");
+            const typeFilter = document.getElementById("typeFilter");
+
+            const nameQuery = nameInput ? nameInput.value.trim() : "";
+            const selectedType = typeFilter ? typeFilter.value : "restaurant";
+
+            return { nameQuery, selectedType };
+        }
+
+        function applySearchFiltersNow() {
+            if (!placesService) {
+                return;
+            }
+
+            queueNearbySearch();
+        }
+
         function searchNearbyRestaurants() {
             const center = map && map.getCenter ? map.getCenter() : null;
             const searchLocation = center
                 ? { lat: center.lat(), lng: center.lng() }
                 : userPosition;
 
+            const { nameQuery, selectedType } = getSearchFilters();
+
             const request = {
                 location: searchLocation,
                 radius: {{NearbyRadiusMeters}},
-                type: "restaurant"
+                type: selectedType || "restaurant"
             };
+
+            if (nameQuery.length > 0) {
+                request.keyword = nameQuery;
+            }
 
             placesService.nearbySearch(request, (results, status) => {
                 clearMarkers();
@@ -1184,6 +1274,29 @@ public sealed partial class MainPage : Page
                 const resultsPanel = document.getElementById("results");
                 resultsPanel.innerHTML = "";
             });
+        }
+
+        function wireSearchControls() {
+            const nameInput = document.getElementById("nameSearchInput");
+            const typeFilter = document.getElementById("typeFilter");
+            const searchButton = document.getElementById("searchButton");
+
+            if (searchButton) {
+                searchButton.addEventListener("click", applySearchFiltersNow);
+            }
+
+            if (nameInput) {
+                nameInput.addEventListener("keydown", event => {
+                    if (event.key === "Enter") {
+                        event.preventDefault();
+                        applySearchFiltersNow();
+                    }
+                });
+            }
+
+            if (typeFilter) {
+                typeFilter.addEventListener("change", applySearchFiltersNow);
+            }
         }
 
         function initMapAtPosition(position) {
@@ -1237,6 +1350,8 @@ public sealed partial class MainPage : Page
         }
 
         function initMap() {
+            wireSearchControls();
+
             if (hasInitialPosition) {
                 setStatus("Using your current location...");
                 initMapAtPosition({ coords: { latitude: initialPosition.lat, longitude: initialPosition.lng } });
