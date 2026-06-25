@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Linq;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using RestaurantPicker.Models;
@@ -20,6 +21,7 @@ public partial class MainViewModel : ObservableObject
     private bool _isSpinning;
     private double _spinTargetAngle;
     private int _selectedSliceIndex;
+    private RestaurantSet? _selectedSet;
 
     public Restaurant CurrentRestaurant
     {
@@ -83,6 +85,21 @@ public partial class MainViewModel : ObservableObject
     }
 
     public ObservableCollection<Restaurant> Restaurants { get; } = new();
+    public ObservableCollection<RestaurantSet> AvailableSets { get; } = new();
+
+    public RestaurantSet? SelectedSet
+    {
+        get => _selectedSet;
+        set
+        {
+            if (SetProperty(ref _selectedSet, value))
+            {
+                _ = ReloadRestaurantsAsync();
+            }
+        }
+    }
+
+    public bool ShowSetSelector => AvailableSets.Count > 1;
 
     public bool CanSpin => Restaurants.Count >= 3;
     public bool CanSpinWheel => CanSpin && !IsSpinning;
@@ -99,6 +116,7 @@ public partial class MainViewModel : ObservableObject
     public async Task InitializeAsync()
     {
         await _repository.InitializeAsync();
+        await ReloadSetsAsync();
         await ReloadRestaurantsAsync();
     }
 
@@ -214,9 +232,43 @@ public partial class MainViewModel : ObservableObject
         }
     }
 
+    private async Task ReloadSetsAsync()
+    {
+        var sets = await _repository.GetAllSetsAsync();
+        var previousSelectedId = _selectedSet?.Id ?? 1;
+
+        AvailableSets.Clear();
+        foreach (var set in sets)
+        {
+            AvailableSets.Add(set);
+        }
+
+        // Update backing field directly to avoid triggering ReloadRestaurantsAsync here.
+        _selectedSet = AvailableSets.FirstOrDefault(s => s.Id == previousSelectedId)
+                       ?? AvailableSets.FirstOrDefault();
+        OnPropertyChanged(nameof(SelectedSet));
+        OnPropertyChanged(nameof(ShowSetSelector));
+    }
+
+    public async Task SaveRestaurantSetAsync(string name)
+    {
+        var ids = Restaurants.Select(r => r.Id).ToList();
+        await _repository.AddSetAsync(name, ids);
+        await ReloadSetsAsync();
+        StatusMessage = $"Restaurant set '{name}' saved.";
+    }
+
     private async Task ReloadRestaurantsAsync()
     {
-        var allRestaurants = await _repository.GetAllAsync();
+        IReadOnlyList<Restaurant> allRestaurants;
+        if (_selectedSet is null || _selectedSet.Id == 1)
+        {
+            allRestaurants = await _repository.GetAllAsync();
+        }
+        else
+        {
+            allRestaurants = await _repository.GetRestaurantsBySetAsync(_selectedSet.Id);
+        }
 
         Restaurants.Clear();
         foreach (var restaurant in allRestaurants)

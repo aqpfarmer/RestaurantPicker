@@ -27,7 +27,7 @@ namespace RestaurantPicker.Views;
 public sealed partial class MainPage : Page
 {
     private const string AppAuthor = "Chris Murphy";
-    private const string AppVersion = "1.1.2";
+    private const string AppVersion = "1.2.0";
     private const double NearbyRadiusMiles = 1.0;
     private const int NearbyRadiusMeters = 1609;
     private const string GoogleMapsApiKeyEnvironmentVariable = "GOOGLE_MAPS_API_KEY";
@@ -511,6 +511,39 @@ public sealed partial class MainPage : Page
     private void QuitButton_Click(object sender, RoutedEventArgs e)
     {
         Application.Current.Exit();
+    }
+
+    private async void SaveSetButton_Click(object sender, RoutedEventArgs e)
+    {
+        var nameBox = new TextBox
+        {
+            PlaceholderText = "Enter a name for this set...",
+            MinWidth = 260
+        };
+
+        var dialog = new ContentDialog
+        {
+            XamlRoot = XamlRoot,
+            Title = "Save Restaurant Set",
+            Content = nameBox,
+            PrimaryButtonText = "Save",
+            CloseButtonText = "Cancel"
+        };
+
+        var result = await dialog.ShowAsync();
+        if (result != ContentDialogResult.Primary)
+        {
+            return;
+        }
+
+        var name = nameBox.Text?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            _viewModel.StatusMessage = "A set name is required.";
+            return;
+        }
+
+        await _viewModel.SaveRestaurantSetAsync(name);
     }
 
         private async Task ShowMapPickerDialogAsync()
