@@ -165,6 +165,19 @@ public sealed class SqliteRestaurantRepository : IRestaurantRepository
         return results;
     }
 
+    public async Task AddRestaurantToSetAsync(int setId, int restaurantId)
+    {
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync();
+
+        var command = connection.CreateCommand();
+        command.CommandText =
+            "INSERT OR IGNORE INTO RestaurantSetMembers (SetId, RestaurantId) VALUES ($setId, $restaurantId);";
+        command.Parameters.AddWithValue("$setId", setId);
+        command.Parameters.AddWithValue("$restaurantId", restaurantId);
+        await command.ExecuteNonQueryAsync();
+    }
+
     public async Task<IReadOnlyList<Restaurant>> GetAllAsync()
     {
         var results = new List<Restaurant>();

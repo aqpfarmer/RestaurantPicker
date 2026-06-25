@@ -14,4 +14,5 @@ public interface IRestaurantRepository
     Task<int> AddSetAsync(string name, IEnumerable<int> restaurantIds);
     Task DeleteSetAsync(int setId);
     Task<IReadOnlyList<Restaurant>> GetRestaurantsBySetAsync(int setId);
+    Task AddRestaurantToSetAsync(int setId, int restaurantId);
 }

@@ -133,6 +133,10 @@ public partial class MainViewModel : ObservableObject
         {
             var addedId = await _repository.AddAsync(CurrentRestaurant);
             CurrentRestaurant.Id = addedId;
+            if (_selectedSet is not null && _selectedSet.Id != 1)
+            {
+                await _repository.AddRestaurantToSetAsync(_selectedSet.Id, addedId);
+            }
             StatusMessage = "Restaurant added.";
         }
         else
