@@ -117,6 +117,7 @@
                 <Button Content="Edit Selected" Command="{Binding EditSelectedRestaurantCommand}" />
                 <Button Content="Delete Selected" Command="{Binding DeleteSelectedRestaurantCommand}" />
                 <Button Content="Save Set" Click="SaveSetButton_Click" />
+                <Button Content="Delete Set" Command="{Binding DeleteCurrentSetCommand}" />
             </StackPanel>
         </Grid>
 

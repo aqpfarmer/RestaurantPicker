@@ -94,12 +94,16 @@ public partial class MainViewModel : ObservableObject
         {
             if (SetProperty(ref _selectedSet, value))
             {
+                OnPropertyChanged(nameof(CanDeleteCurrentSet));
+                DeleteCurrentSetCommand.NotifyCanExecuteChanged();
                 _ = ReloadRestaurantsAsync();
             }
         }
     }
 
     public bool ShowSetSelector => AvailableSets.Count > 1;
+
+    public bool CanDeleteCurrentSet => _selectedSet is not null && _selectedSet.Id != 1;
 
     public bool CanSpin => Restaurants.Count >= 3;
     public bool CanSpinWheel => CanSpin && !IsSpinning;
@@ -252,6 +256,24 @@ public partial class MainViewModel : ObservableObject
                        ?? AvailableSets.FirstOrDefault();
         OnPropertyChanged(nameof(SelectedSet));
         OnPropertyChanged(nameof(ShowSetSelector));
+        OnPropertyChanged(nameof(CanDeleteCurrentSet));
+        DeleteCurrentSetCommand.NotifyCanExecuteChanged();
+    }
+
+    [RelayCommand(CanExecute = nameof(CanDeleteCurrentSet))]
+    public async Task DeleteCurrentSetAsync()
+    {
+        if (_selectedSet is null || _selectedSet.Id == 1)
+        {
+            return;
+        }
+
+        var setName = _selectedSet.Name;
+        await _repository.DeleteSetAsync(_selectedSet.Id);
+        await ReloadSetsAsync();
+        // SelectedSet setter triggers ReloadRestaurantsAsync, but we updated the backing field directly in ReloadSetsAsync.
+        await ReloadRestaurantsAsync();
+        StatusMessage = $"Set '{setName}' deleted.";
     }
 
     public async Task SaveRestaurantSetAsync(string name)
